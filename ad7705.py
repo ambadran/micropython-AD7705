@@ -1,5 +1,6 @@
-from machine import Pin, SPI, const
+from machine import Pin, SoftSPI
 from micropython import const
+from time import sleep_ms
 
 REG_CMM = const(0x0) #communication register 8 bit
 REG_SETUP = const(0x1) #setup register 8 bit
@@ -56,14 +57,83 @@ BITS = const(8)
 SPEED = const(50000)
 DELAY = const(10)
 
+DEFAULT_VREF = const(3.3)
+
 class AD770X():
-    def __init__(self,bus=0,device=0) :        
-        self.spi = SPI(0, baudrate=SPEED, polarity=0, phase=0, bits=BITS, sck=Pin(6), mosi=Pin(7), miso=Pin(4))
-        self.CS = Pin(32, Pin.OUT)
+    def __init__(self) :        
+        self.spi = SoftSPI(baudrate=SPEED, polarity=1, phase=1, sck=Pin(6), mosi=Pin(7), miso=Pin(4))
+        self.CS = Pin(27, Pin.OUT)
 
+        self.initChannel(CHN_AIN1)
 
-    def 
+    def initChannel(self, channel,clkDivider=CLK_DIV_1, polarity=BIPOLAR, gain=GAIN_1, updRate=UPDATE_RATE_25):
+        self.setNextOperation(REG_CLOCK, channel, 0)
+        self.writeClockRegister(0, clkDivider, updRate)
+
+        self.setNextOperation(REG_SETUP, channel, 0)
+        self.writeSetupRegister(MODE_SELF_CAL, gain, polarity, 0, 0)
+
+        sleep_ms(300)
+
+    def setNextOperation(self,reg,channel,readWrite) :
+        r = reg << 4 | readWrite << 3 | channel
+        r = r.to_bytes(1, 'h')
+        # print(f"Writing: {r}")  # for Debugging
+        self.spi.write(r)
+
+    def writeClockRegister(self, CLKDIS, CLKDIV, outputUpdateRate) :
+        '''
+        Clock Register
+           7      6       5        4        3        2      1      0
+        ZERO(0) ZERO(0) ZERO(0) CLKDIS(0) CLKDIV(0) CLK(1) FS1(0) FS0(1)
+
+        CLKDIS: master clock disable bit
+        CLKDIV: clock divider bit
+        '''
+        r = CLKDIS << 4 | CLKDIV << 3 | outputUpdateRate
+        r &= ~(1 << 2); # clear CLK
+        r = r.to_bytes(1, 'h')
+        # print(f"Writing: {r}")  # for Debugging
+        self.spi.write(r)
+
+    def writeSetupRegister(self,operationMode,gain,unipolar,buffered,fsync) :
+        '''
+        Setup Register
+          7     6     5     4     3      2      1      0
+        MD10) MD0(0) G2(0) G1(0) G0(0) B/U(0) BUF(0) FSYNC(1)
+        '''
+        r = operationMode << 6 | gain << 3 | unipolar << 2 | buffered << 1 | fsync
+        r = r.to_bytes(1, 'h')
+        # print(f"Writing: {r}")  # for Debugging
+        self.spi.write(r)
+
+    def readADResult(self) :
+        buf = bytearray(2)
+        self.spi.readinto(buf, 0x00)
+
+        r = int(buf[0] << 8 | buf[1])
+        return r
+
+    def readADResultRaw(self,channel) :
+        # while not self.dataReady(channel) :
+        #     pass
+        self.setNextOperation(REG_DATA, channel, 1)
+
+        return self.readADResult()
+
+    def readVoltage(self, channel, vref=DEFAULT_VREF, factor=1) :    
+        return float(self.readADResultRaw(channel)) / 65536.0 * vref * factor
+
+    def keep_reading(self, wanted_func):
+        try:
+            while True:
+                print(f"Reading: {wanted_func(CHN_AIN1)}", end=' \r')
+                sleep_ms(100)
+
+        except KeyboardInterrupt:
+            return
 
         
+ad = AD770X()
 
-
+# open repl, `from ad7705 import *` then `ad.keep_reading(ad.readADResultRaw)` to view 16-bit ADC value
